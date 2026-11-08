@@ -91,7 +91,6 @@ docker compose exec pg-master psql -h postgres_entrypoint -p 5432 -U postgres -d
 ```powershell
 docker compose start pg-slave
 ```
+![Возврат ноды и синхронизация](screenshots/part3-05-replica-sync.png)
 
 После присоединения к кластеру она автоматически определила, что лидер уже существует, и перешла в роль реплики. Данные, записанные на новом мастере во время её отсутствия, были получены через WAL-репликацию. Проверка через прямой запрос к `pg-slave` подтвердила наличие записи `written_after_failover`, то есть целостность данных сохранена.
-
----
