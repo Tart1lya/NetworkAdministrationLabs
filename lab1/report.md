@@ -1,4 +1,4 @@
-# Часть 3. High Availability с HAProxy
+# Часть 3. HAProxy
 
 ### 1. Интеграция HAProxy в проект
 
