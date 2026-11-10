@@ -1,19 +1,135 @@
+# Часть 1. Развёртывание PostgreSQL
+
+### 1. Подготовка образа PostgreSQL с Patroni
+
+Для обеих нод был подготовлен общий Dockerfile на основе образа postgres:15. В образ установили Patroni с поддержкой ZooKeeper и скопировали файлы postgres0.yml и postgres1.yml. PostgreSQL и Patroni работают в одном контейнере, поэтому Patroni может запускать PostgreSQL и управлять его ролью.
+
+### 2. Настройка кластера
+
+На первом этапе в docker-compose.yml были описаны три сервиса.
+
+- pg-master запускает Patroni с postgres0.yml. В кластере нода называется postgresql0, для подключения с хоста используется порт 5433.
+- pg-slave запускает Patroni с postgres1.yml. В кластере нода называется postgresql1, для подключения с хоста используется порт 5434.
+- zoo запускает ZooKeeper на порту 2181. Patroni хранит в нём состояние кластера и использует блокировку для выбора лидера.
+
+Обе ноды входят в кластер my_cluster, используют zoo:2181 и настроены на синхронную репликацию. Для каждой ноды выделен отдельный том с данными PostgreSQL.
+
+### 3. Запуск и проверка состояния кластера
+
+Из папки lab1 собрали образ и запустили контейнеры.
+
+```bash
+docker compose up -d --build
+```
+
+![Сборка образа и запуск контейнеров](screenshots/part1-01-compose-up.png)
+
+Команда docker ps показала, что все три контейнера перешли в состояние Up.
+
+![Состояние контейнеров](screenshots/part1-02-docker-ps.png)
+
+В выводе docker logs zoo видно, что ZooKeeper начал слушать порт 2181.
+
+![Запуск ZooKeeper на порту 2181](screenshots/part1-03-zookeeper-log.png)
+
+По логам Patroni проверили распределение ролей. Нода postgresql0 (pg-master) получила блокировку лидера, а postgresql1 (pg-slave) подключилась к ней как реплика.
+
+![Лог pg-master после выбора лидера](screenshots/part1-04-pg-master-log-leader.png)
+
+![Лог pg-slave после подключения к лидеру](screenshots/part1-05-pg-slave-log-replica.png)
+
+Состояние кластера подтвердили через patronictl.
+
+```bash
+docker exec pg-master patronictl -c /postgres0.yml list
+```
+
+Нода pg-master отображалась как Leader, а pg-slave как Sync Standby в состоянии streaming. В момент проверки отставание реплики было равно нулю.
+
+![Роли нод и состояние репликации](screenshots/part1-06-patronictl-list.png)
+
+### 4. Ответы на дополнительные вопросы
+
+Чем отличаются expose и ports? expose указывает внутренний порт контейнера и не публикует его на хосте. Контейнеры в общей сети Compose могут обращаться к порту, на котором слушает приложение, и без expose. Директива ports публикует порт контейнера на хосте. В нашей конфигурации 8008 используется для REST API Patroni внутри сети Compose, а 5433:5432 и 5434:5432 позволяют подключаться к PostgreSQL с хоста.
+
+Пересобирается ли образ при перезапуске проекта? docker compose restart перезапускает существующие контейнеры и не пересобирает образ. Если после docker compose down выполнить docker compose up -d, Compose использует уже собранный образ, пока тот доступен локально. Файлы Patroni попадают в образ через COPY, поэтому после их редактирования или изменения Dockerfile нужно пересобрать образ и запустить контейнеры на его основе командой docker compose up -d --build.
+
+---
+
+# Часть 2. Проверка репликации
+
+### Шаг 1. Подключение к обеим нодам
+
+В pgAdmin были созданы два подключения. Для обоих указали хост localhost, базу postgres, пользователя postgres и пароль postgres. Для pg-master использовали порт 5433, для pg-slave - 5434. В дереве pgAdmin открылась база postgres на обеих нодах.
+
+![Подключения к pg-master и pg-slave в pgAdmin](screenshots/part2-01-pgadmin-connections.png)
+
+### Шаг 2. Создание таблицы и запись на лидере
+
+По выводу patronictl лидером была нода pg-master. В её Query Tool создали таблицу my_first_replication и добавили одну строку.
+
+```sql
+CREATE TABLE my_first_replication (id int, my_data varchar, my_comment varchar);
+INSERT INTO my_first_replication VALUES (1, 'my important data', 'is this line replicated?');
+```
+
+Сообщение INSERT 0 1 подтвердило, что строка была записана.
+
+![Результат INSERT на лидере](screenshots/part2-02-leader-insert-ok.png)
+
+### Шаг 3. Чтение данных на реплике
+
+В Query Tool ноды pg-slave выполнили запрос к той же таблице.
+
+```sql
+SELECT * FROM my_first_replication;
+```
+
+Запрос вернул строку с id = 1 и значением my important data. Таблица и запись появились на реплике автоматически через потоковую репликацию WAL.
+
+![Результат SELECT на реплике](screenshots/part2-03-replica-select.png)
+
+### Шаг 4. Проверка режима только для чтения
+
+В том же подключении отдельно попытались вставить ещё одну строку и удалить таблицу.
+
+```sql
+INSERT INTO my_first_replication VALUES (2, 'new data', 'insert on replica');
+DROP TABLE my_first_replication;
+```
+
+PostgreSQL отклонил обе команды с кодом 25006. В сообщениях указано, что INSERT и DROP TABLE нельзя выполнить в транзакции только для чтения. Проверка подтвердила, что реплика принимает запросы на чтение и отклоняет операции, меняющие данные или структуру таблицы.
+
+![Ошибка INSERT на реплике](screenshots/part2-04-replica-insert-error.png)
+
+![Ошибка DROP TABLE на реплике](screenshots/part2-05-replica-drop-error.png)
+
+---
+
 # Часть 3. HAProxy
 
 ### 1. Интеграция HAProxy в проект
 
-Для балансировки трафика был создан конфигурационный файл `haproxy.cfg` и добавлен новый сервис `haproxy` в `docker-compose.yml`. HAProxy слушает порт `5432` как основную точку входа и порт `7000` для страницы статистики. Проверка доступности нод выполняется через REST API Patroni (порт `8008`), поэтому балансировщик всегда знает, какая нода является текущим лидером, и направляет трафик именно на неё.
+В docker-compose.yml добавили сервис haproxy с конфигурацией из haproxy.cfg. Внутри сети Compose клиенты подключаются к postgres_entrypoint:5432. Страница статистики работает на порту 7000. HAProxy проверяет ноды через REST API Patroni на порту 8008. Ответ 200 от OPTIONS / получает нода, которая работает в роли primary и удерживает блокировку лидера. По результатам этих проверок HAProxy выбирает, куда направлять новые подключения.
+
+С хоста используются localhost:5432 для PostgreSQL через HAProxy и http://localhost:7000/ для статистики. Если порты заняты, можно задать другие внешние порты при запуске. Например, при свободных 15432 и 17000 на macOS или Linux команда выглядит так.
+
+```bash
+HAPROXY_SQL_PORT=15432 HAPROXY_STATS_PORT=17000 docker compose up -d --build
+```
 
 ### 2. Перезапуск и проверка состояния кластера
 
-После внесения изменений проект был перезапущен:
+После внесения изменений проект перезапустили и проверили состояние контейнеров и логи.
 
 ```bash
 docker compose down
 docker compose up -d
+docker compose ps
+docker compose logs pg-master pg-slave haproxy
 ```
 
-По итогам проверки все четыре контейнера (`pg-master`, `pg-slave`, `zoo`, `postgres_entrypoint`) перешли в состояние **Up**, а логи HAProxy не содержали ошибок конфигурации. Кластер готов к тесту отказоустойчивости.
+При контрольном запуске все четыре сервиса перешли в состояние Up. В логах Patroni обе ноды сообщили Zookeeper connection established, state: CONNECTED. HAProxy загрузил конфигурацию (Loading success), а проверка лидера вернула Layer7 check passed, code: 200. По выводу patronictl list нода pg-slave была лидером, а pg-master работала как синхронная реплика в состоянии streaming.
 
 ---
 
@@ -21,53 +137,46 @@ docker compose up -d
 
 ### Шаг 1. Определение текущего лидера
 
-Выясняем какая нода является мастером. Для этого в каждом контейнере выполнялся запрос статуса репликации:
+Определили текущего лидера запросом к каждой ноде.
 
 ```sql
 SELECT pg_is_in_recovery();
 ```
 
-Результаты:
+- pg-master вернул t и работал как реплика.
+- pg-slave вернул f и работал как лидер.
 
-- `pg-master` вернул `t` — нода является репликой.
-- `pg-slave` вернул `f` — нода является мастером.
+Перед остановкой повторили запрос через HAProxy.
 
-Значит, целью принудительной остановки выбрана нода **`pg-slave`**.
+```bash
+docker compose exec pg-slave psql -h postgres_entrypoint -p 5432 -U postgres -d postgres -c "SELECT pg_is_in_recovery();"
+```
 
-![Определение ролей до падения](screenshots/part3-01-initial-state.png)
+Через postgres_entrypoint:5432 запрос вернул f. В статистике HAProxy нода pg-slave была в состоянии UP, а pg-master - DOWN для подключений через этот вход. При прямом подключении pg-master продолжал отвечать на запросы как реплика.
 
 ### Шаг 2. Принудительная остановка мастера
 
-Мастер-нода была остановлена командой:
+Остановили контейнер текущего лидера.
 
 ```powershell
 docker compose stop pg-slave
 ```
 
-Контейнер успешно завершил работу, что имитирует аварийный отказ сервера.
+После остановки pg-slave перестал принимать подключения.
 
-![Остановка мастера](screenshots/part3-02-stop-master.png)
+![Проверка ролей обеих нод и остановка лидера pg-slave](screenshots/part3-02-stop-master.png)
 
 ### Шаг 3. Анализ процесса Failover
 
-Через несколько секунд после потери связи с лидером оставшаяся нода `pg-master` инициировала повышение собственного статуса. В логах Patroni видим:
+После остановки лидера нода postgresql0 (pg-master) получила блокировку в ZooKeeper и повысила свою роль до primary. В логе видно получение запроса promote, переход PostgreSQL на новую timeline и готовность принимать подключения.
 
-1. Обнаружена недоступность старого лидера (`postgresql1`).
-2. Нода `postgresql0` (`pg-master`) захватила блокировку в ZooKeeper.
-3. Выполнена команда promote, PostgreSQL переведён в режим записи.
-4. Система готова принимать соединения как новый мастер.
+![Логи переключения лидера](screenshots/part3-03-failover-log.png)
 
-Ключевые строки из логов:
-
-> `INFO: promoted self to leader by acquiring session lock`
-> `LOG: database system is ready to accept connections`
-> `INFO: no action. I am (postgresql0), the leader with the lock`
-
-![Логи переключения мастера](screenshots/part3-03-failover-log.png)
+При контрольном запуске первая попытка подключения через HAProxy после остановки завершилась по тайм-ауту. Через 20 секунд от команды остановки прежний лидер отображался как DOWN, новый как UP, а клиент снова мог подключиться к тому же адресу.
 
 ### Шаг 4. Проверка работы через HAProxy
 
-После завершения failover была проверена возможность подключения и записи через единую точку входа HAProxy (`postgres_entrypoint:5432`). Подключение выполнялось из живого контейнера:
+После завершения failover была проверена возможность подключения и записи через единую точку входа HAProxy (postgres_entrypoint:5432). Подключение выполнялось из живого контейнера:
 
 ```powershell
 docker compose exec pg-master psql -h postgres_entrypoint -p 5432 -U postgres -d postgres
@@ -75,22 +184,23 @@ docker compose exec pg-master psql -h postgres_entrypoint -p 5432 -U postgres -d
 
 Внутри SQL-сессии были выполнены операции:
 
-1. Проверка роли: `SELECT pg_is_in_recovery();` — результат `f`, то есть HAProxy направила нас на активного мастера.
-2. Создание тестовой таблицы `ha_failover_test`.
-3. Вставка записи `written_after_failover`.
+1. Проверка роли: SELECT pg_is_in_recovery(); - результат f, то есть HAProxy направила нас на активного мастера.
+2. Создание тестовой таблицы ha_failover_test.
+3. Вставка записи written_after_failover.
 4. Чтение данных обратно.
 
-Все операции прошли успешно. Это подтверждает, что HAProxy корректно перенаправила трафик на нового лидера (`pg-master`), несмотря на то, что прежний мастер был недоступен.
+После переключения HAProxy направил новое подключение на pg-master. Через тот же адрес удалось прочитать и данные из my_first_replication, записанные до остановки лидера.
 
 ![Запись данных через HAProxy](screenshots/part3-04-haproxy-write-ok.png)
 
 ### Шаг 5. Возврат ноды и синхронизация данных
 
-Остановленная ранее нода `pg-slave` была запущена обратно:
+Остановленная ранее нода pg-slave была запущена обратно:
 
 ```powershell
 docker compose start pg-slave
 ```
+
 ![Возврат ноды и синхронизация](screenshots/part3-05-replica-sync.png)
 
-После присоединения к кластеру она автоматически определила, что лидер уже существует, и перешла в роль реплики. Данные, записанные на новом мастере во время её отсутствия, были получены через WAL-репликацию. Проверка через прямой запрос к `pg-slave` подтвердила наличие записи `written_after_failover`, то есть целостность данных сохранена.
+После запуска pg-slave присоединился к кластеру как реплика. Прямой запрос к этой ноде вернул t для pg_is_in_recovery(), а в таблице ha_failover_test появилась строка written_after_failover. Реплика получила через WAL данные, записанные на новом лидере во время её отсутствия. На контрольном запуске новый лидер также показал для вернувшейся ноды streaming и sync в pg_stat_replication.

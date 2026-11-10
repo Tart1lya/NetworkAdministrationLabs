@@ -52,8 +52,8 @@ services:
     restart: always
     hostname: postgres_entrypoint
     ports:
-      - "5432:5432"
-      - "7000:7000"
+      - "${HAPROXY_SQL_PORT:-5432}:5432"
+      - "${HAPROXY_STATS_PORT:-7000}:7000"
     depends_on:
       - pg-master
       - pg-slave
