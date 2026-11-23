@@ -1,0 +1,87 @@
+services:
+  nextcloud:
+    image: nextcloud:29.0.6
+    container_name: nextcloud
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - nc-html:/var/www/html
+      - nc-data:/var/www/html/data
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: promtail
+    volumes:
+      - nc-data:/opt/nc_data:ro
+      - ./promtail_config.yml:/etc/promtail/config.yml:ro
+      - promtail-positions:/var/lib/promtail
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    environment:
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  postgres-zabbix:
+    image: postgres:15
+    container_name: postgres-zabbix
+    environment:
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: zabbix
+      POSTGRES_DB: zabbix
+    volumes:
+      - zabbix-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix -d zabbix"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:ubuntu-6.4-latest
+    container_name: zabbix-back
+    ports:
+      - "127.0.0.1:10051:10051"
+    depends_on:
+      postgres-zabbix:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: zabbix
+      POSTGRES_DB: zabbix
+      DB_SERVER_HOST: postgres-zabbix
+
+  zabbix-web-nginx-pgsql:
+    image: zabbix/zabbix-web-nginx-pgsql:ubuntu-6.4-latest
+    container_name: zabbix-front
+    ports:
+      - "127.0.0.1:8082:8080"
+    depends_on:
+      postgres-zabbix:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: zabbix
+      POSTGRES_DB: zabbix
+      DB_SERVER_HOST: postgres-zabbix
+      ZBX_SERVER_HOST: zabbix-back
+
+volumes:
+  nc-html:
+  nc-data:
+  promtail-positions:
+  zabbix-db:
