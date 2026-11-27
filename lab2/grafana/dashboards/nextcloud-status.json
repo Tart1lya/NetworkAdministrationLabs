@@ -1,0 +1,57 @@
+{
+  "uid": "nextcloud-status",
+  "title": "Nextcloud — состояние",
+  "schemaVersion": 39,
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Состояние Nextcloud",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
+      "datasource": { "type": "alexanderzobnin-zabbix-datasource", "uid": "nextcloud-zabbix" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "alexanderzobnin-zabbix-datasource", "uid": "nextcloud-zabbix" },
+          "schema": 12,
+          "queryType": "2",
+          "group": { "filter": "Applications" },
+          "host": { "filter": "Nextcloud" },
+          "itemTag": { "filter": "" },
+          "item": { "filter": "Nextcloud: ping service" },
+          "textFilter": "",
+          "functions": [],
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "color": { "mode": "fixed", "fixedColor": "gray" },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "healthy": { "text": "HEALTHY", "color": "green", "index": 0 },
+                "unhealthy": { "text": "UNHEALTHY", "color": "red", "index": 1 }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "/^(?!Time$).+/",
+          "values": false
+        }
+      }
+    }
+  ]
+}

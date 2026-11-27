@@ -1,0 +1,45 @@
+{
+  "uid": "nextcloud-logs",
+  "title": "Nextcloud — логи",
+  "schemaVersion": 39,
+  "time": { "from": "now-24h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Записи nextcloud.log",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 18 },
+      "datasource": { "type": "loki", "uid": "nextcloud-loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "nextcloud-loki" },
+          "editorMode": "code",
+          "expr": "{job=\"nextcloud_logs\", filename=\"/opt/nc_data/nextcloud.log\"}",
+          "queryType": "range",
+          "maxLines": 200
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": { "include": { "names": ["Time", "Line"] } }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Time", "desc": true }]
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [{ "id": "custom.width", "value": 200 }]
+          }
+        ]
+      }
+    }
+  ]
+}
